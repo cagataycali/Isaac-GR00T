@@ -24,7 +24,7 @@ WORKDIR /workspace
 COPY pyproject.toml .
 
 #Set to get precompiled jetson wheels
-RUN export PIP_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126 && \
-    export PIP_TRUSTED_HOST=pypi.jetson-ai-lab.dev && \
+RUN export PIP_INDEX_URL=https://pypi.jetson-ai-lab.io/jp6/cu126 && \
+    export PIP_TRUSTED_HOST=pypi.jetson-ai-lab.io && \
     pip3 install --upgrade pip setuptools && \
     pip3 install -e .[orin]
