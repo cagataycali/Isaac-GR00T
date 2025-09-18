@@ -35,6 +35,8 @@ RUN export PIP_INDEX_URL=https://pypi.jetson-ai-lab.io/sbsa/cu130 && \
     pip3 install --upgrade pip setuptools && \
     pip3 install -e .[thor]
 
+RUN pip3 install "git+https://github.com/facebookresearch/pytorch3d.git"
+
 # Build and install decord
 RUN cd /tmp && \
     git clone https://git.ffmpeg.org/ffmpeg.git && \
@@ -44,13 +46,7 @@ RUN cd /tmp && \
     make -j$(nproc) && \
     make install && \
     cd /tmp && \
-    git clone --recursive https://github.com/dmlc/decord && \
-    cd decord && \
-    mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
-    make && \
-    cd ../python && \
-    python3 setup.py install --user && \
+    pip3 install decord2 \
     cd /workspace && \
     rm -rf /tmp/ffmpeg /tmp/decord
 
