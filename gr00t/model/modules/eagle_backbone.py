@@ -20,31 +20,35 @@ class EagleBackbone(torch.nn.Module):
         trainable_params_fp32: bool = False,
         transformers_loading_kwargs: dict = {},
     ):
-        """
-        EagleBackbone is to generate n_queries to represent the future action hidden states.
-        Args:
-            model_name: nvidia/Eagle-Block2A-2B-v2
-            tune_llm: whether to tune the LLM model (default: False)
-            tune_visual: whether to tune the visual model (default: False)
-        """
-
         super().__init__()
 
-        # Add attention kwargs
+        # Add attention kwargs - try flash, fallback to eager
         extra_kwargs = {}
         if use_flash_attention:
-            extra_kwargs["attn_implementation"] = "flash_attention_2"
+            try:
+                import flash_attn
+                extra_kwargs["attn_implementation"] = "flash_attention_2"
+            except ImportError:
+                print("WARNING: flash_attn not available, using eager attention (slower but functional)")
+                extra_kwargs["attn_implementation"] = "eager"
         if load_bf16:
             extra_kwargs["torch_dtype"] = torch.bfloat16
 
         if model_name == "nvidia/Eagle-Block2A-2B-v2":
-            assert use_flash_attention, (
-                "nvidia/Eagle-Block2A-2B-v2 requires flash attention by default"
-            )
+            # Patched: flash attention not required on JetPack/aarch64
             assert load_bf16, "nvidia/Eagle-Block2A-2B-v2 requires bfloat16 by default"
             eagle_path = os.path.join(os.path.dirname(__file__), "nvidia", "Eagle-Block2A-2B-v2")
             config = AutoConfig.from_pretrained(eagle_path, trust_remote_code=True)
-            self.model = AutoModel.from_config(config, trust_remote_code=True)
+            # Override the attention implementation in the Eagle config
+            if hasattr(config, '_attn_implementation'):
+                attn_impl = extra_kwargs.get("attn_implementation", "eager")
+                config._attn_implementation = attn_impl
+            # Also override in sub-configs
+            if hasattr(config, 'text_config') and hasattr(config.text_config, '_attn_implementation'):
+                config.text_config._attn_implementation = extra_kwargs.get("attn_implementation", "eager")
+            if hasattr(config, 'vision_config') and hasattr(config.vision_config, '_attn_implementation'):
+                config.vision_config._attn_implementation = extra_kwargs.get("attn_implementation", "eager")
+            self.model = AutoModel.from_config(config, trust_remote_code=True, **extra_kwargs)
         else:
             raise ValueError(f"Model {model_name} not supported")
 
@@ -55,7 +59,6 @@ class EagleBackbone(torch.nn.Module):
         self.select_layer = select_layer
         self.set_trainable_parameters(tune_llm, tune_visual, tune_top_llm_layers)
         if load_bf16 and trainable_params_fp32:
-            # cast trainable parameters to fp32
             for n, p in self.named_parameters():
                 if p.requires_grad:
                     p.data = p.data.to(torch.float32)
@@ -79,7 +82,6 @@ class EagleBackbone(torch.nn.Module):
 
         print(f"Tune backbone llm: {self.tune_llm}")
         print(f"Tune backbone visual: {self.tune_visual}")
-        # Check if any parameters are still trainable. If not, print a warning.
         for name, p in self.named_parameters():
             if p.requires_grad:
                 print(f"Backbone trainable parameter: {name}")
@@ -87,11 +89,6 @@ class EagleBackbone(torch.nn.Module):
             print("Warning: No backbone trainable parameters found.")
 
     def set_frozen_modules_to_eval_mode(self):
-        """
-        Huggingface will call model.train() at each training_step. To ensure
-        the expected behaviors for modules like dropout, batchnorm, etc., we
-        need to call model.eval() for the frozen modules.
-        """
         if self.training:
             if self.model.language_model and not self.tune_llm:
                 self.model.language_model.eval()
@@ -104,7 +101,6 @@ class EagleBackbone(torch.nn.Module):
 
     def forward(self, vl_input: BatchFeature) -> BatchFeature:
         self.set_frozen_modules_to_eval_mode()
-        # 0. Set frozen module to eval
         keys_to_use = ["input_ids", "attention_mask", "pixel_values"]
         vl_input = {k: vl_input[k] for k in keys_to_use}
         outputs = self.model(**vl_input, output_hidden_states=True)
@@ -117,4 +113,4 @@ class EagleBackbone(torch.nn.Module):
                 "backbone_attention_mask": attention_mask,
                 "image_mask": image_mask,
             }
-        )  # [B, T2, hidden_size]
+        )
